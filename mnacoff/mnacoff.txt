@@ -1,0 +1,36 @@
+Multinode AC ONOFF
+V 1.0 - 7/23/18
+Original script by: Roger
+Currently Maintained by : Brian & Steven
+
+Usage:
+
+Performs simultaneous AC ONOFF with PDU on Multinode systems such as big twin, fat twin, etc. Executed externally on any linux environment. 
+
+
+Instructions:
+
+1. Download script on to an external linux environment. 
+2. Install packages: net-snmp-utils, ipmitool
+3. Configure the power state to POWER ON in the bios for all nodes.
+4. Configure the nodes to run regular ONOFF with a long down time. ex: cburn-r74 ONOFF MDELT=256 OFFT=1000 DIR=/sysv/brian/test/aconoff.
+5. Note the PDU ports and IP address.
+6. On the external environment. Create 2 txt files.
+   
+   txt1 :
+   list of BMC IPs of the nodes. (1 IP per line) *Do not leave any new lines containing blanks*
+
+   txt2 :
+   The IP of the PDU on the 1st line.
+   the port number on the 2nd line. (1 port number per line) *Do not leave any new lines containing blanks*
+
+   ex: 
+         172.16.123.123
+         2
+         3
+         4
+         5
+
+7. execute the mnacoff script with the 2 txt file as parameters. ex: ./mnacoff.sh input1.txt input2.txt
+8. The script should execute and result can be seen within the script terminal / cburn directory.
+

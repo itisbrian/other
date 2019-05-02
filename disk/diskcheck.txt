@@ -1,0 +1,26 @@
+SUPREME DiskCheck
+
+email brianchen@supermicro.com for changes.
+Version: 1.1 Build Date: 09/17/2018
+
+Usage:
+
+Warning: THIS SCRIPT WIPES ALL DATA ON DRIVES
+
+RC=http://westworld.bnet/scripts/diskcheck.sh
+
+ex: cburn-r74 DIR=/yourdirectory RC=http://westworld.bnet/scripts/diskcheck.sh
+
+Results can be found in the diskcheck.txt in the burnin directory.
+
+Local version also available.
+
+./localdiskcheck.sh log.txt
+
+
+Test Procedures:
+1. File System tests for SSDs & NVMEs : 25%, 100% xfs file system, parition, creation, and mounting features. 
+2. TRIM tests for SSDs / NVMEs : xfs, ext4, btrfs file systems.
+
+
+

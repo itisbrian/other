@@ -1,0 +1,9 @@
+Check IPMI Memory Leak
+
+
+1. Place runleaktest.sh inside SMCIPMITool directory on a remote linux system.
+2. ./runleaktest.sh <bmc ip> to start the test
+3. Place and run logleak.sh on the system being tested
+
+Allow test to run for a few days to determine if there is a memory leak.
+

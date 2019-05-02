@@ -1,0 +1,14 @@
+IPMI/BIOS SUM FLASHING TOOL 
+VER 1.0 7/8/2018 --stven
+
+Usage:
+
+Environment: Linux/cburn
+Just put it in the SUM folder and run it!
+If you want to flash the same bios/ipmi, just input the same fw for  fw_1.bin and fw_2.bin.
+
+
+command Usage: 
+                ./sumflash.sh "BMC_ip" "ipmi or bios" "cycles" "rom_1" "rom_2""
+                
+                Bios flashing example: ./sumflash.sh 172.16.1.1 bios 20 fw_1.bin fw_2.bin

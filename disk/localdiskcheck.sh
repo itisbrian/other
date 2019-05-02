@@ -1,0 +1,1015 @@
+#!/bin/bash
+#############################################################
+#   _______     _______ _               ____
+#  / ____\ \   / / ____| |        /\   |  _ \
+# | (___  \ \_/ / (___ | |       /  \  | |_) |
+#  \___ \  \   / \___ \| |      / /\ \ |  _ <
+#  ____) |  | |  ____) | |____ / ____ \| |_) |
+# |_____/   |_| |_____/|______/_/    \_\____/
+
+
+#   _____ _    _ _____  _____  ______ __  __ ______
+#  / ____| |  | |  __ \|  __ \|  ____|  \/  |  ____|
+# | (___ | |  | | |__) | |__) | |__  | \  / | |__
+#  \___ \| |  | |  ___/|  _  /|  __| | |\/| |  __|
+#  ____) | |__| | |    | | \ \| |____| |  | | |____
+# |_____/ \____/|_|    |_|  \_\______|_|  |_|______|
+
+
+#Build Date : 8/28/2018
+#email brianchen@supermicro.com for bug report and changes.
+
+#####################################################################
+# This script gets executed on tty2
+#
+# As a note, we need some way to pass sigusr1 to the endlogging script for immediate shutdown
+#
+# This rolls out a 1M blocksize for spinning disks.  Different disk classes will require new parameters.
+#
+
+#cat /root/stage2.conf | grep "SYS_DIR" > /root/flasher_config.sh
+#source /root/flasher_config.sh
+
+usage ()
+{
+echo "Please assign an output file name."
+echo "Example: ./localdiskcheck.sh outputfilename.txt"
+exit
+}
+
+if [ "$#" -ne 1 ]
+then
+    usage
+fi
+
+RDIR="${SYS_DIR}"
+OUTPUT=$1
+
+
+echo "" > "${OUTPUT}"
+
+
+
+
+################################################ SUPREME ###############################
+echo ""
+echo ""
+echo -e "           \e[32m███████\e[0m╗\e[32m██\e[0m╗   \e[32m██\e[0m╗\e[32m███████\e[0m╗\e[32m██\e[0m╗      \e[32m█████\e[0m╗ \e[32m██████\e[0m╗ "
+echo -e "           \e[32m██\e[0m╔════╝╚\e[32m██\e[0m╗ \e[32m██\e[0m╔╝\e[32m██\e[0m╔════╝\e[32m██\e[0m║     \e[32m██\e[0m╔══\e[32m██\e[0m╗\e[32m██\e[0m╔══\e[32m██\e[0m╗"
+echo -e "           \e[32m███████\e[0m╗ ╚\e[32m████\e[0m╔╝ \e[32m███████\e[0m╗\e[32m██\e[0m║     \e[32m███████\e[0m║\e[32m██████\e[0m╔╝"
+echo -e "           ╚════\e[32m██\e[0m║  ╚\e[32m██\e[0m╔╝  ╚════\e[32m██\e[0m║\e[32m██\e[0m║     \e[32m██\e[0m╔══\e[32m██\e[0m║\e[32m██\e[0m╔══\e[32m██\e[0m╗"
+echo -e "           \e[32m███████\e[0m║   \e[32m██\e[0m║   \e[32m███████\e[0m║\e[32m███████\e[0m╗\e[32m██\e[0m║  \e[32m██\e[0m║\e[32m██████\e[0m╔╝"
+echo -e "           ╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝╚═════╝ "
+echo " "
+echo -e " \e[5m                         SYSLAB File System Test.\e[25m"
+echo -e "\e[32m Code in Beta Test : report errors to brianchen@supermicro.com \e[0m"
+echo " "
+
+#################################################################################################
+#color correction:
+# \e[32m = green
+# \e[31m = red
+# \e[93m = Orange
+# \e[0m = white
+#################################################################################################
+
+yum -y install xfsprogs
+if [ $? -ne 0 ]; then
+	echo "Error: Cannot continue; unable to install xfsprogs package."
+    exit 1
+fi
+echo " "
+yum -y install hdparm
+if [ $? -ne 0 ]; then
+	echo "Error: Cannot continue; unable to install hdparm package."
+    exit 1
+fi
+echo " "
+yum -y install btrfs-progs
+if [ $? -ne 0 ]; then
+	echo "Error: Cannot continue; unable to install xfsprogs package."
+	exit 1
+fi
+echo " "
+if mount | grep /tmp/mnt 2>/dev/null; then
+    echo "Error: Mount detected on /tmp/mnt, please unmount and restart the script."
+    exit 1
+else
+    :
+fi
+echo " "
+function wipedrives() {
+
+	DISKPARTS=`ls /dev/sd*[0-9] 2>/dev/null`
+if [ "${DISKPARTS}" != "" ]; then
+        for i in `ls /dev/sd* | grep -v '[0-9]$'`; do
+            echo "Partitions found on HDD/SSD disk:"
+            echo "${i}"
+            #wipefs -a $i 2>/dev/null
+            parted -s "$i" mklabel gpt
+            echo "HDD/SDD wipe finished."
+        done
+fi
+
+DISKPARTS=`ls /dev/nvme*n1 2>/dev/null`
+for x in $DISKPARTS; do
+       echo "Secure erase" $x "."
+       nvme format -s 1 "$x"
+       echo "Secure erase finished."
+done
+}
+
+function haltTest() {
+	while [ 1 ]; do
+		sleep 1
+	done
+}
+
+# Create partition on disk
+function makePartition() {
+	#Create a new label
+	parted -s "${1}" mklabel gpt
+	LABELRETC=$?
+	if [ $LABELRETC -ne 0 ]; then
+		return $LABELRETC
+	fi
+
+	#Then make the part
+	parted -s "${1}" mkpart "" xfs "0%" "${2}%"
+	return $?
+}
+
+function isnvme() {
+	echo ${1} |grep -i nvme &> /dev/null
+	ISNVME=$?
+	return $ISNVME
+}
+
+# Perform mkfs on disk
+function makeFilesystem() {
+	isnvme ${1}
+	NVME=$?
+	PT=${1}
+	if [ "$NVME" -eq "0" ]; then
+		PT="${1}p"
+	fi
+    sleep 10
+	#We only ever have ONE partition
+	if [ ! -b "${PT}1" ]; then
+		#ls -al /dev/nvme*
+		echo "ERROR: Failed at blockdev comparison (120)"
+		return 1
+	fi
+
+	#Force overwrite of partition.
+	mkfs.xfs -f -K "${PT}1"
+	return $?
+}
+
+function clearMount() {
+	isnvme ${1}
+	NVME=$?
+	PT=${1}
+	if [ $NVME -eq 0 ]; then
+		PT="${1}p"
+	fi
+
+	umount -f /tmp/mnt
+        rmdir /tmp/mnt
+	UMOUNTRETC=$?
+	#32 is "Not mounted"; 0 is unmounted successfully; anything else is an Error and we need to halt.
+	if [ $UMOUNTRETC -eq 32 ] || [ $UMOUNTRETC -eq 0 ] ; then
+		echo -e "\e[32m${disk}\e[0m : Unmount Successful." 
+		echo -e "${disk} : Unmount Successful." &>> $OUTPUT
+
+	else
+		echo "Error: Failed to unmount /tmp/mnt." | tee -a $OUTPUT
+		rm -rf /tmp/mnt
+		return 1
+	fi
+
+	
+	return $?
+}
+
+# Perform mount on disk
+function performMount() {
+	mkdir /tmp/mnt
+
+	isnvme ${1}
+	NVME=$?
+	PT=${1}
+
+	if [ $NVME -eq 0 ]; then
+		PT="${1}p"
+	fi
+
+	mount "${PT}1" /tmp/mnt
+	MOUNTRETC=$?
+
+	if [ $MOUNTRETC -ne 0 ]; then
+		echo "${disk} : Error, could not mount partition. " | tee -a $OUTPUT
+		clearMount
+		if [ $? -ne 0 ]; then
+			#We can't continue at this point.
+			echo "${disk} : Error, failed to clearMount()" | tee -a $OUTPUT
+			return 1
+		fi
+
+		return $MOUNTRETC
+	fi
+
+	clearMount
+	return $?
+}
+
+
+function createbtrfs() {
+	disk="${1}"
+
+	parted -s "${disk}" mklabel gpt
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mklabel gpt on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+
+		parted -s "${disk}" mkpart "" btrfs "0%" "100%"
+		sleep 10
+		mkfs.btrfs -K -f "${disk}1"
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkfs.btrfs on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+	
+        mkdir /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+		mount "${disk}1" /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+}
+
+function nvmecreatebtrfs() {
+	disk="${1}"
+
+	parted -s "${disk}" mklabel gpt
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mklabel gpt on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+
+		parted -s "${disk}" mkpart "" btrfs "0%" "100%"
+		sleep 10
+		mkfs.btrfs -K -f "${disk}p1"
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkfs.btrfs on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+	
+        mkdir /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+		mount "${disk}p1" /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+}
+
+
+function createxfs() {
+	    disk="${1}"
+
+		parted -s "${disk}" mklabel gpt
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mklabel gpt on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+
+		parted -s "${disk}" mkpart "" xfs "0%" "100%"
+        sleep 10
+		mkfs.xfs -K -f "${disk}1"
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkfs.xfs on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+	
+        mkdir /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+		mount "${disk}1" /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+}
+
+function nvmecreatexfs() {
+
+		disk="${1}"
+
+		parted -s "${disk}" mklabel gpt
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mklabel gpt on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+
+		parted -s "${disk}" mkpart "" xfs "0%" "100%"
+		sleep 10
+		mkfs.xfs -K -f "${disk}p1"
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkfs.xfs on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+	
+        mkdir /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+		mount "${disk}p1" /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+}
+
+function createext4() {
+	disk="${1}"
+
+		parted -s "${disk}" mklabel gpt
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mklabel gpt on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+
+		parted -s "${disk}" mkpart "" ext4 "0%" "100%"
+		sleep 10
+		mkfs.ext4 -E nodiscard -F "${disk}1"
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkfs.ext4 on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+	
+        mkdir /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+		mount "${disk}1" /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+}
+
+function nvmecreateext4() {
+	disk="${1}"
+
+		parted -s "${disk}" mklabel gpt
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mklabel gpt on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+
+		parted -s "${disk}" mkpart "" ext4 "0%" "100%"
+		sleep 10
+		mkfs.ext4 -E nodiscard -F "${disk}p1"
+		if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkfs.ext4 on ${disk}." | tee -a $OUTPUT
+			continue
+		fi
+	
+        mkdir /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+		mount "${disk}p1" /tmp/mnt
+        if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to mkdir /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+
+}
+
+
+function trim() {
+
+		disk="${1}"
+
+        echo "" | tee -a $OUTPUT
+		echo -e "\e[32m${disk}\e[0m : Starting Trim 1 " 
+		echo "${disk} : Starting Trim 1 " &>> $OUTPUT
+	    A1=`fstrim /tmp/mnt --verbose | grep -o -P "([0-9]*) bytes" | grep -o -P "[0-9]*"`
+	    if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to fstrim /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+        echo -e "\e[32m${disk}\e[0m : Trim 1 complete, byte size = \e[32m${A1}\e[0m." 
+        echo -e "${disk} : Trim 1 complete, byte size = ${A1}." &>> $OUTPUT
+
+
+
+        echo -e "\e[32m${disk}\e[0m : Starting Trim 2  " 
+        echo "${disk} : Starting Trim 2 " &>> $OUTPUT
+        sleep 60
+        A2=`fstrim /tmp/mnt --verbose | grep -o -P "([0-9]*) bytes" | grep -o -P "[0-9]*"`
+                if [ $? -ne 0 ]; then
+			echo "${disk} : Error, failed to fstrim /tmp/mnt." | tee -a $OUTPUT
+			continue
+		fi
+        echo -e "\e[32m${disk}\e[0m : Trim 2 complete, byte size = \e[32m${A2}\e[0m." 
+        echo -e "${disk} : Trim 2 complete, byte size = ${A2}." &>> $OUTPUT
+
+        echo -e "Results  : " | tee -a $OUTPUT
+        if [ $A1 -eq $A2 ] && [ $A1 -ne 0 ] && [ $A2 -ne 0 ] ; then 
+        echo -e "\e[32m${disk}\e[0m : Warning: Trims returned equal value." 
+        echo -e "${disk} : Warning: Trims returned equal value." &>> $OUTPUT
+		
+	elif [ $A1 -gt $A2 ] && [ $A1 -ne 0 ] ; then 
+		echo -e "\e[32m${disk}\e[0m : Pass: Trim 1 > Trim 2. " 
+        echo -e "${disk} : Pass: Trim 1 > Trim 2.  " &>> $OUTPUT
+
+    elif [ $A1 -lt $A2 ] && [ $A1 -ne 0 ] && [ $A2 -ne 0 ] ; then 
+		echo -e "\e[32m${disk}\e[0m : Warning: Trim 1 < Trim 2. " 
+        echo -e "${disk} : Warning: Trim 1 < Trim 2. " &>> $OUTPUT
+
+
+	elif [ $A1 -eq 0 ] && [ $A2 -eq 0 ]; then
+		echo -e "\e[32m${disk}\e[0m : Both trims returned 0." 
+        echo -e "${disk} : Both trims returned 0." &>> $OUTPUT
+	else
+		echo -e "\e[32m${disk}\e[0m : Warning: Unexpected results, please verify." 
+		echo -e "${disk} : Warning : Unexpected results, please verify." &>> $OUTPUT
+	fi
+
+    umount -f /tmp/mnt
+    RETURN=$?
+    if [ $RETURN -eq 32 ] || [ $RETURN -eq 0 ] ; then
+		echo -e "\e[32m${disk}\e[0m : Unmount Successful."
+		echo "${disk} : Unmount Successful." &>>$OUTPUT
+	else
+		echo "${disk} : Error, failed to unmount /tmp/mnt." | tee -a $OUTPUT
+		exit 1
+	fi
+
+    rmdir /tmp/mnt
+    if [ $? -ne 0 ]; then
+			echo "Error: Failed to rmdir /tmp/mnt." | tee -a $OUTPUT
+			exit 1
+	fi
+echo " " | tee -a $OUTPUT
+
+
+
+
+
+}
+
+
+function get_sd() {
+    for aa in `ls /dev/sd*[a-z] 2>/dev/null`; do
+        [ "$(ls ${aa}* | wc -l)" == "1" ] && echo $aa
+    done
+}
+
+get_sd > A.txt
+function get_nvme() {
+    for bb in `ls /dev/nvme*n1 2>/dev/null`; do
+        [ "$(ls ${bb}* | wc -l)" == "1" ] && echo $bb
+    done    
+ }
+get_nvme >> A.txt
+
+function fastwipe() {
+
+
+
+
+for disk in $(cat A.txt); do
+wipefs $disk -af
+done
+
+}
+#################################################################################################
+#detect  partitions in drives and deletes it
+
+
+echo -e " SYSLAB Disk Check"  &>> $OUTPUT
+echo -e "============================================================================" &>> $OUTPUT
+echo -e " "  &>> $OUTPUT
+
+hostnamectl 2>/dev/null
+
+if [ $? -ne 0 ]; then
+	echo "Unable to obtain system information."
+
+else
+	hostnamectl &>> $OUTPUT
+fi
+
+
+
+cat /etc/redhat-release 2>/dev/null
+if [ $? -ne 0 ]; then
+	echo "Unable to obtain release version."
+else
+	cat /etc/redhat-release &>> $OUTPUT
+fi
+
+echo -e " "  &>> $OUTPUT
+
+
+
+echo -e "============================== \e[33mDrive Detection\e[0m =============================="
+echo -e "============================== Drive Detection ==============================" &>> $OUTPUT
+echo " " | tee -a $OUTPUT
+
+#wipedrives
+
+############################# color correction ##################
+green='tput setaf 2'
+norm='tput sgr0'
+############################# start fio #########################
+
+get_sd1() {
+    for a in `ls /dev/sd*[a-z] 2>/dev/null`; do
+        [ "$(ls ${a}* | wc -l)" -gt "1" ] && echo $a
+    done
+}
+
+
+for disk in $(get_sd1); do
+ echo -e "Partition(s) found on \e[31m${disk}\e[0m, skipping drive."
+ echo -e "Partition(s) found on ${disk}, skipping drive." &>> $OUTPUT
+done
+
+
+
+get_nvme1() {
+    for b in `ls /dev/nvme*n1 2>/dev/null`; do
+        [ "$(ls ${b}* | wc -l)" -gt "1" ] && echo $b
+    done    
+ }
+
+for disk in $(get_nvme1) ; do
+echo -e "Partition(s) found on \e[31m${disk}\e[0m, skipping drive."
+echo -e "Partition(s) found on ${disk}, skipping drive." &>> $OUTPUT
+done
+echo " "
+
+
+get_nvme2() {
+    for c in `ls /dev/nvme*n1 2>/dev/null`; do
+        [ "$(ls ${c}* | wc -l)" == "1" ] && echo $c
+    done    
+ }
+
+
+nvls=`nvme list 2>/dev/null`
+if [ $? -ne 0 ]; then
+echo "NVME CLI package not found, please yum install nvme-cli and restart."
+exit 1
+fi
+
+
+AA=0
+
+
+for disk in $(get_sd); do
+((AA=$AA+1))
+done
+
+echo -e "\e[32m$AA\e[0m HDD/SSD available."
+echo -e "$AA HDD/SSD available." &>> $OUTPUT
+
+BB=0
+
+ for disk in $(get_nvme) ; do
+((BB=$BB+1))
+done
+
+echo -e "\e[32m$BB\e[0m NVMEs available."
+echo -e "$BB HDD/SSD available." &>> $OUTPUT
+
+#echo -e "\e[32m$AA\e[0m HDD/SSD found."
+#echo -e "$AA HDD/SSD found." &>> $OUTPUT
+#echo -e "\e[32m$AB\e[0m NVMe found." 
+#echo -e "$AB NVMe found." &>> $OUTPUT
+#echo " " | tee -a $OUTPUT
+
+
+if [ $AA -eq 0 ] && [ $AB -eq 0 ]; then
+	echo -e "\e[31mNo disks found, bailing.\e[0m"
+	echo -e "No disks found, bailing." &>> $OUTPUT
+	exit 1
+else
+  :
+fi	
+
+fastwipe
+
+echo -e "========================== \e[33mDrive Partitioning Check \e[0m =========================="
+echo -e "========================== Drive Partitioning Check  ==========================" &>> $OUTPUT
+echo " " | tee -a $OUTPUT
+
+
+
+
+for disk in $(get_sd); do
+
+	# 25% use-case
+	makePartition ${disk} 25
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make partition 25% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make partition 25% successful."
+		echo -e "${disk} : Make Parition 25% successful." &>> $OUTPUT
+	fi
+
+	makeFilesystem ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make filesystem 25% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make filesystem 25% successful."
+		echo -e "${disk} : Make filesystem 25% successful." &>> $OUTPUT
+
+	fi
+
+	performMount ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, disk mount 25% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Disk mount 25% successful."
+		echo -e "${disk} : Disk mount 25% successful." &>> $OUTPUT
+	fi
+
+	#100% usage use-case
+
+	makePartition ${disk} 100
+		if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make partition 100% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make partition 100% successful."
+		echo -e "${disk} : Make Parition 100% successful." &>> $OUTPUT
+	fi
+
+	makeFilesystem ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make filesystem 100% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make filesystem 100% successful."
+		echo -e "${disk} : Make filesystem 100% successful." &>> $OUTPUT
+
+	fi
+
+	performMount ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, disk mount 100% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Disk mount 100% successful."
+		echo -e "${disk} : Disk mount 100% successful." &>> $OUTPUT
+	fi
+
+
+echo " " | tee -a $OUTPUT
+
+done
+
+echo "" | tee -a $OUTPUT
+echo "" | tee -a $OUTPUT
+
+
+################ NVME  ###################################################################
+
+
+ for disk in $(get_nvme) ; do
+	# 25% use-case
+		# 25% use-case
+	makePartition ${disk} 25
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make partition 25% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make partition 25% successful."
+		echo -e "${disk} : Make Parition 25% successful." &>> $OUTPUT
+	fi
+
+	makeFilesystem ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make filesystem 25% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make filesystem 25% successful."
+		echo -e "${disk} : Make filesystem 25% successful." &>> $OUTPUT
+
+	fi
+
+	performMount ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, disk mount 25% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Disk mount 25% successful."
+		echo -e "${disk} : Disk mount 25% successful." &>> $OUTPUT
+	fi
+
+	#100% usage use-case
+
+	makePartition ${disk} 100
+		if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make partition 100% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make partition 100% successful."
+		echo -e "${disk} : Make Parition 100% successful." &>> $OUTPUT
+	fi
+
+	makeFilesystem ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, make filesystem 100% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Make filesystem 100% successful."
+		echo -e "${disk} : Make filesystem 100% successful." &>> $OUTPUT
+
+	fi
+
+	performMount ${disk}
+	if [ $? -ne 0 ]; then
+		echo -e "${disk} : Error, disk mount 100% failed." | tee -a $OUTPUT
+		continue
+	else
+		echo -e "\e[32m${disk}\e[0m : Disk mount 100% successful."
+		echo -e "${disk} : Disk mount 100% successful." &>> $OUTPUT
+	fi
+
+echo " "| tee -a $OUTPUT	
+done
+
+
+
+
+
+
+echo " " | tee -a $OUTPUT
+
+
+
+echo -e "============================== \e[33mTRIM Check\e[0m ==============================" 
+echo "============================== TRIM Check ==============================" &>> $OUTPUT
+echo " " | tee -a $OUTPUT
+
+
+fastwipe
+
+#AA=`ls /dev/sd* 2>/dev/null | wc -l` 
+#AB=`ls /dev/nvme*n1 2>/dev/null | wc -l` 
+
+#if [ $AA -eq 0 ] && [ $AB -eq 0 ]; then
+#	echo "No drives found, exiting." | tee -a $OUTPUT
+#	exit 1
+#fi	
+
+#if [ $AA -eq 0 ] && [ $AB -ne 0 ]; then
+#	echo "Regular drives not found, NVMe drives not supported at this time." | tee -a $OUTPUT
+#	echo "Check diskcheck.txt in the cburn directory for log. " | tee -a $OUTPUT
+#    echo " " | tee -a $OUTPUT
+#    echo "=================================== END OF TEST =========================================" | tee -a $OUTPUT
+#    exit 1
+#fi    
+
+
+	count=0
+	for disk in $(get_sd); do
+	    counter=`hdparm -I "${disk}" | grep -i TRIM | wc -l 2>/dev/null`
+        if [ $counter -gt 0 ]; then
+    	((count=count+1))
+        fi	
+    done
+        
+
+
+for disk in `ls /sys/block/ | grep -i nvme* 2>/dev/null`; do
+	DG=`cat /sys/block/"${disk}"/queue/discard_granularity`
+	PARTLIST=`ls /sys/block/${disk} |grep ${disk}p* | wc -l`
+	if [ $DG -gt 0 ] && [ $PARTLIST -eq 0 ]; then
+    ((count=count+1))
+	    
+	fi
+done
+
+
+echo "TRIM Capable Drives: ${count}"  &>> $OUTPUT
+if [ $count -eq 0 ]; then
+    	echo "No TRIM supported drives found." | tee -a $OUTPUT
+        echo "Check diskcheck.txt in the cburn directory for log. " | tee -a $OUTPUT
+        echo " " | tee -a $OUTPUT
+        echo "=================================== END OF TEST =========================================" | tee -a $OUTPUT
+        exit 1
+fi
+
+
+
+
+#DISKWIPE
+
+
+
+
+echo " " | tee -a $OUTPUT
+#AA=`ls /dev/sd* 2>/dev/null | wc -l` 
+#AB=`ls /dev/nvme*n1 2>/dev/null | wc -l` 
+
+
+#echo -e "\e[32m$AA\e[0m HDD/SSD found."
+#echo -e "$AA HDD/SSD found." &>> $OUTPUT
+#echo -e "\e[32m$AB\e[0m NVMe found." 
+#echo -e "$AB NVMe found." &>> $OUTPUT
+#echo " " | tee -a $OUTPUT
+
+
+# 
+#	Y88b   d88P 8888888888 .d8888b.  
+#	 Y88b d88P  888       d88P  Y88b 
+#	  Y88o88P   888       Y88b.      
+#	   Y888P    8888888    "Y888b.   
+#	   d888b    888           "Y88b. 
+#	  d88888b   888             "888 
+#	 d88P Y88b  888       Y88b  d88P 
+#	d88P   Y88b 888        "Y8888P"  
+                                 
+                                 
+                                 
+echo -e "============================== \e[33mXFS Check\e[0m =============================="
+echo -e "============================== XFS Check  =============================="  &>> $OUTPUT
+echo " " | tee -a $OUTPUT
+
+for disk in $(get_sd); do
+	hdparm -I "${disk}" | grep -i TRIM 2>/dev/null
+
+	if [ $? -eq 0 ]; then
+	fpdisk=$disk	
+    createxfs "${fpdisk}"
+
+    trim "${fpdisk}"
+    fi
+
+done
+
+
+#Patrick Worked on THIS one
+for disk in `ls /sys/block/ | grep -i nvme* 2>/dev/null`; do
+	DG=`cat /sys/block/"${disk}"/queue/discard_granularity`
+	PARTLIST=`ls /sys/block/${disk} |grep ${disk}p* | wc -l`
+	if [ $DG -gt 0 ] && [ $PARTLIST -eq 0 ]; then
+        fpdisk="/dev/${disk}"
+
+
+		nvmecreatexfs "${fpdisk}"
+		trim "${fpdisk}"
+	    
+	fi
+done
+
+
+echo " " | tee -a $OUTPUT
+    
+echo -e "======================== \e[33mXFS Check Complete\e[0m ==============================" 
+echo -e "======================== XFS Check Complete ==============================" &>> $OUTPUT
+echo " " | tee -a $OUTPUT
+# 
+#	8888888888 Y88b   d88P 88888888888  d8888  
+#	888         Y88b d88P      888     d8P888  
+#	888          Y88o88P       888    d8P 888  
+#	8888888       Y888P        888   d8P  888  
+#	888           d888b        888  d88   888  
+#	888          d88888b       888  8888888888 
+#	888         d88P Y88b      888        888  
+#	8888888888 d88P   Y88b     888        888  
+fastwipe
+
+echo " "  | tee -a $OUTPUT                             
+echo -e "============================== \e[33mEXT4 Check\e[0m =============================="
+echo -e "============================== EXT4 Check  =============================="  &>> $OUTPUT
+
+for disk in $(get_sd); do
+	hdparm -I "${disk}" | grep -i TRIM 2>/dev/null
+
+	if [ $? -eq 0 ]; then
+		fpdisk=$disk
+        createext4 "${fpdisk}"
+
+
+        trim "${fpdisk}"
+fi
+
+done
+
+
+for disk in `ls /sys/block/ | grep -i nvme* 2>/dev/null`; do
+	DG=`cat /sys/block/"${disk}"/queue/discard_granularity`
+	PARTLIST=`ls /sys/block/${disk} |grep ${disk}p* | wc -l`
+	if [ $DG -gt 0 ] && [ $PARTLIST -eq 0 ]; then
+        fpdisk="/dev/${disk}"
+
+
+		nvmecreateext4 "${fpdisk}"
+		trim "${fpdisk}"
+	    
+	fi
+done
+
+echo " " | tee -a $OUTPUT
+echo -e "======================== \e[33mEXT4 Check Complete\e[0m ==============================" 
+echo -e "======================== EXT4 Check Complete ==============================" &>> $OUTPUT                                        
+echo " " | tee -a $OUTPUT
+
+#888888b. 88888888888 8888888b.  8888888888 .d8888b.  
+#888  "88b    888     888   Y88b 888       d88P  Y88b 
+#888  .88P    888     888    888 888       Y88b.      
+#8888888K.    888     888   d88P 8888888    "Y888b.   
+#888  "Y88b   888     8888888P"  888           "Y88b. 
+#888    888   888     888 T88b   888             "888 
+#888   d88P   888     888  T88b  888       Y88b  d88P 
+#8888888P"    888     888   T88b 888        "Y8888P"  
+                                                     
+fastwipe                
+
+                                        
+                                        
+echo " "  | tee -a $OUTPUT                                     
+echo -e "============================== \e[33mBTRFS Check\e[0m =============================="
+echo -e "============================== BTRFS Check  =============================="  &>> $OUTPUT
+
+for disk in $(get_sd); do
+	hdparm -I "${disk}" | grep -i TRIM 2>/dev/null
+
+	if [ $? -eq 0 ]; then
+		fpdisk=$disk
+		createbtrfs "${fpdisk}"
+
+        trim "${fpdisk}"
+fi
+
+done
+
+for disk in `ls /sys/block/ | grep -i nvme* 2>/dev/null`; do
+	DG=`cat /sys/block/"${disk}"/queue/discard_granularity`
+	PARTLIST=`ls /sys/block/${disk} |grep ${disk}p* | wc -l`
+	if [ $DG -gt 0 ] || [ $PARTLIST -eq 0 ]; then
+        fpdisk="/dev/${disk}"
+
+
+		nvmecreatebtrfs "${fpdisk}"
+		trim "${fpdisk}"
+	    
+	fi
+done
+
+
+echo " " | tee -a $OUTPUT
+echo -e "======================== \e[33mBTRFS Check Complete\e[0m ==============================" 
+echo -e "======================== BTRFS Check Complete ==============================" &>> $OUTPUT     
+echo " " | tee -a $OUTPUT
+echo "Performing wipefs fast wipe: "
+fastwipe
+echo "Wipefs fast wipe complete. "
+echo " " | tee -a $OUTPUT
+rm -f A.txt
+
+AZ=`cat $OUTPUT | grep -i error | wc -l`
+if [ $AZ -gt 0 ] ; then
+	echo -e "Errors found in the log file. " | tee -a $OUTPUT
+	echo -e "Warnings found in the log file." | tee -a $OUTPUT
+fi	
+
+
+echo "Check $OUTPUT in the cburn directory for log. " | tee -a $OUTPUT
+echo " " | tee -a $OUTPUT
+echo "=================================== END OF TEST =========================================" | tee -a $OUTPUT
+

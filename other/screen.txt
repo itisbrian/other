@@ -1,0 +1,12 @@
+Change screen resolution in Linux 
+xrandr method
+10/23/2018
+-------------------------------------------------------------------------------------------
+
+Usage: Allows to add and change resolution unsupported in xrandr for specific monitors. 
+Needs 3 parameters in the following format(width height refreshRate)
+
+Example: ./screen.sh 1920 1080 60
+
+Standard 16:9 resolutions: 1024×576, 1152×648, 1280×720, 1366×768, 1600×900, 1920×1080, 2560×1440 and 3840×2160.
+
